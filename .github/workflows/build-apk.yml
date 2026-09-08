@@ -1,40 +1,46 @@
-name: Build Android APK
+name: Build and Publish Release APK
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build-apk:
-    name: Build Qadha Salah Tracker APK
+  build-and-release:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew
 
-      - name: Install Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v6
+      - name: Create Temporary Keystore
+        run: |
+          keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Create or Update 'latest' GitHub Release
+        uses: ncipollo/release-action@v1
         with:
-          gradle-version: '9.3.1'
-
-      - name: Build debug APK
-        run: gradle assembleDebug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: qadha-salah-tracker-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          artifacts: "app/build/outputs/apk/debug/*.apk"
+          tag: "latest"
+          name: "Latest Automated Build"
+          body: "Automated APK build from the latest commit."
+          allowUpdates: true
+          recreateRelease: true
+          token: ${{ secrets.GITHUB_TOKEN }}
