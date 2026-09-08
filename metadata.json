@@ -1,0 +1,6 @@
+{
+  "name": "Qadha Tracker",
+  "description": "A premium, modern, minimalistic Islamic Qadha Prayer Tracker with sequential queue prompts, streaks, and milestone achievements.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
