@@ -35,16 +35,16 @@ jobs:
 
       - name: Rename APK File
         run: |
-          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Qadha-Salah-Tracker-v1.0.apk
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Qadha-Salah-Tracker.apk
 
-      - name: Create or Update GitHub Release
+      - name: Create or Update 'latest' GitHub Release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "app/build/outputs/apk/debug/Qadha-Salah-Tracker-v1.0.apk"
-          tag: "v1.0.0"
-          name: "Qadha Salah Tracker v1.0.0 – Missed Islamic Prayer Tracker APK"
+          artifacts: "app/build/outputs/apk/debug/Qadha-Salah-Tracker.apk"
+          tag: "latest"
+          name: "Qadha Salah Tracker – Missed Islamic Prayer Tracker APK"
           body: |
-            ## 🌙 Qadha Salah Tracker - Android App Release
+            ## 🌙 Qadha Salah Tracker - Latest Release
 
             Download the official Android APK for **Qadha Salah Tracker**. Track Qadha Salah, missed prayers, prayer history, Qadha Waqt, and monitor your spiritual progress with an easy Islamic prayer tracker.
 
@@ -54,7 +54,7 @@ jobs:
             * Lightweight and privacy-focused Android application.
 
             ---
-            * **File Name:** `Qadha-Salah-Tracker-v1.0.apk`
-            * **Version:** 1.0.0
+            * **File Name:** `Qadha-Salah-Tracker.apk`
+            * **Build Status:** Updated automatically on every commit to `main`.
           allowUpdates: true
           token: ${{ secrets.GITHUB_TOKEN }}
