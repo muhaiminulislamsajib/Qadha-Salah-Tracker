@@ -3,6 +3,7 @@ package com.example
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -323,5 +324,57 @@ class ExampleRobolectricTest {
     val initialFajrStatus = viewModel.uiState.value.todayStatus[PrayerType.FAJR]
     viewModel.reconcileEndOfDayPrayer(PrayerType.FAJR, EndOfDayChoice.SKIP)
     assertEquals(initialFajrStatus, viewModel.uiState.value.todayStatus[PrayerType.FAJR])
+  }
+
+  @Test
+  fun `account creation with name, password reset, and new login works seamlessly`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val email = "fatima_${System.currentTimeMillis()}@example.com"
+    val initialPassword = "OldPassword123!"
+    val newPassword = "NewSecurePassword456!"
+
+    // 1. Create account with full name
+    val createResult = QadhaAuthManager.signUpWithEmail(context, "Fatima Zahra", email, initialPassword)
+    assertTrue(createResult.isSuccess)
+    val user = createResult.getOrThrow()
+    assertEquals("Fatima Zahra", user.displayName)
+    assertEquals(email, user.email)
+    assertFalse(user.isGoogle)
+
+    // 2. Sign in with initial password succeeds
+    val loginSuccess = QadhaAuthManager.signInWithEmail(context, email, initialPassword)
+    assertTrue(loginSuccess.isSuccess)
+    assertEquals("Fatima Zahra", loginSuccess.getOrThrow().displayName)
+
+    // 3. Sign in with wrong password fails
+    val loginWrong = QadhaAuthManager.signInWithEmail(context, email, "WrongPassword!")
+    assertTrue(loginWrong.isFailure)
+
+    // 4. Reset password using forgot password flow
+    val resetResult = QadhaAuthManager.resetPassword(context, email, newPassword)
+    assertTrue(resetResult.isSuccess)
+
+    // 5. Old password no longer works
+    val loginOldAfterReset = QadhaAuthManager.signInWithEmail(context, email, initialPassword)
+    assertTrue(loginOldAfterReset.isFailure)
+
+    // 6. New password works successfully
+    val loginNewAfterReset = QadhaAuthManager.signInWithEmail(context, email, newPassword)
+    assertTrue(loginNewAfterReset.isSuccess)
+    assertEquals(user.uid, loginNewAfterReset.getOrThrow().uid)
+  }
+
+  @Test
+  fun `google sign-in authenticates and sets profile data correctly`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val googleEmail = "google_user_${System.currentTimeMillis()}@gmail.com"
+    val googleId = "gid_123456789"
+    val displayName = "Zayd Ali"
+
+    val googleUser = QadhaAuthManager.signInWithGoogle(context, googleEmail, googleId, displayName)
+    assertEquals(googleEmail, googleUser.email)
+    assertEquals("Zayd Ali", googleUser.displayName)
+    assertTrue(googleUser.isGoogle)
+    assertTrue(googleUser.uid.startsWith("goog_"))
   }
 }

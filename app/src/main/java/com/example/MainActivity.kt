@@ -946,14 +946,18 @@ class QadhaTrackerViewModel(
         }
     }
 
-    fun signUpWithEmail(email: String, pass: String) {
-        val result = QadhaAuthManager.signUpWithEmail(appContext, email, pass)
+    fun signUpWithEmail(name: String, email: String, pass: String) {
+        val result = QadhaAuthManager.signUpWithEmail(appContext, name, email, pass)
         if (result.isSuccess) {
             _authErrorMessage.value = null
             loadAuthenticatedUser(result.getOrNull()!!)
         } else {
             _authErrorMessage.value = result.exceptionOrNull()?.message ?: "Sign up failed"
         }
+    }
+
+    fun signUpWithEmail(email: String, pass: String) {
+        signUpWithEmail("", email, pass)
     }
 
     fun signInWithEmail(email: String, pass: String) {
@@ -966,8 +970,17 @@ class QadhaTrackerViewModel(
         }
     }
 
-    fun signInWithGoogle(email: String) {
-        val user = QadhaAuthManager.signInWithGoogle(appContext, email)
+    fun resetPassword(email: String, newPass: String, onResult: (Boolean, String) -> Unit) {
+        val result = QadhaAuthManager.resetPassword(appContext, email, newPass)
+        if (result.isSuccess) {
+            onResult(true, "Password updated successfully. You can now sign in.")
+        } else {
+            onResult(false, result.exceptionOrNull()?.message ?: "Failed to reset password")
+        }
+    }
+
+    fun signInWithGoogle(email: String, googleId: String? = null, displayName: String? = null) {
+        val user = QadhaAuthManager.signInWithGoogle(appContext, email, googleId, displayName)
         _authErrorMessage.value = null
         loadAuthenticatedUser(user)
     }
@@ -1316,8 +1329,9 @@ fun MainAppScreen(
     if (!uiState.authChoiceMade) {
         QadhaAuthScreen(
             onEmailSignIn = { email, pass -> viewModel.signInWithEmail(email, pass) },
-            onEmailSignUp = { email, pass -> viewModel.signUpWithEmail(email, pass) },
-            onGoogleSignIn = { email -> viewModel.signInWithGoogle(email) },
+            onEmailSignUp = { name, email, pass -> viewModel.signUpWithEmail(name, email, pass) },
+            onResetPassword = { email, newPass, callback -> viewModel.resetPassword(email, newPass, callback) },
+            onGoogleSignIn = { email, id, name -> viewModel.signInWithGoogle(email, id, name) },
             onContinueAsGuest = { viewModel.continueAsGuest() },
             errorMessage = authError,
             onClearError = { viewModel.clearAuthError() }

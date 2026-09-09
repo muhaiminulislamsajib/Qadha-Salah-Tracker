@@ -34,11 +34,13 @@ object QadhaAuthManager {
     }
 
     /**
-     * Creates a new user account with Email & Password.
+     * Creates a new user account with Full Name, Email & Password.
      * Assigns a unique, secure, persistent UID.
      */
-    fun signUpWithEmail(context: Context, email: String, password: String): Result<QadhaUser> {
+    fun signUpWithEmail(context: Context, name: String, email: String, password: String): Result<QadhaUser> {
         val cleanEmail = email.trim().lowercase()
+        val cleanName = name.trim().ifBlank { cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() } }
+        
         if (!android.util.Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches()) {
             return Result.failure(IllegalArgumentException("Please enter a valid email address"))
         }
@@ -51,24 +53,53 @@ object QadhaAuthManager {
             return Result.failure(IllegalStateException("An account with this email already exists. Please sign in."))
         }
 
-        // Generate a unique Firebase-compatible UID
+        // Generate a unique UID
         val randomPart = UUID.randomUUID().toString().replace("-", "")
         val uid = "usr_${hashSha256(cleanEmail).take(12)}${randomPart.take(12)}"
         val passwordHash = hashSha256(password)
-        val displayName = cleanEmail.substringBefore("@").replaceFirstChar { it.uppercase() }
 
         val json = JSONObject().apply {
             put("uid", uid)
             put("email", cleanEmail)
             put("password_hash", passwordHash)
-            put("display_name", displayName)
+            put("display_name", cleanName)
             put("is_google", false)
         }
         accountsPrefs.edit().putString(cleanEmail, json.toString()).apply()
 
-        val user = QadhaUser(uid = uid, email = cleanEmail, displayName = displayName, isGoogle = false)
+        val user = QadhaUser(uid = uid, email = cleanEmail, displayName = cleanName, isGoogle = false)
         setCurrentUser(context, user)
         return Result.success(user)
+    }
+
+    fun signUpWithEmail(context: Context, email: String, password: String): Result<QadhaUser> {
+        return signUpWithEmail(context, "", email, password)
+    }
+
+    /**
+     * Resets password for an existing account so user is never locked out.
+     */
+    fun resetPassword(context: Context, email: String, newPassword: String): Result<Unit> {
+        val cleanEmail = email.trim().lowercase()
+        if (!android.util.Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches()) {
+            return Result.failure(IllegalArgumentException("Please enter a valid email address"))
+        }
+        if (newPassword.length < 6) {
+            return Result.failure(IllegalArgumentException("New password must be at least 6 characters"))
+        }
+
+        val accountsPrefs = context.getSharedPreferences(PREFS_ACCOUNTS, Context.MODE_PRIVATE)
+        val accountData = accountsPrefs.getString(cleanEmail, null)
+            ?: return Result.failure(IllegalArgumentException("No account found with this email. Please verify your email or sign up."))
+
+        val json = JSONObject(accountData)
+        if (json.optBoolean("is_google", false)) {
+            return Result.failure(IllegalArgumentException("This email is registered with Google. Please use 'Continue with Google'."))
+        }
+
+        json.put("password_hash", hashSha256(newPassword))
+        accountsPrefs.edit().putString(cleanEmail, json.toString()).apply()
+        return Result.success(Unit)
     }
 
     /**
