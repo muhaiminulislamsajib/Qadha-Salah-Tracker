@@ -15,10 +15,99 @@ import java.util.TimeZone
 object PrayerAlarmScheduler {
     const val ACTION_PRAYER_ALARM = "com.example.ACTION_PRAYER_ALARM"
     const val ACTION_PRAYER_REMINDER = "com.example.ACTION_PRAYER_REMINDER"
+    const val ACTION_END_OF_DAY_REVIEW = "com.example.ACTION_END_OF_DAY_REVIEW"
     const val EXTRA_PRAYER_ID = "prayer_id"
+    const val EXTRA_OPEN_END_OF_DAY_REVIEW = "open_end_of_day_review"
 
     private const val DAILY_ALARM_REQUEST_BASE = 1000
     private const val REMINDER_ALARM_REQUEST_BASE = 2000
+    private const val END_OF_DAY_ALARM_REQUEST = 3000
+
+    fun getEndOfDayReviewTime(context: Context): String {
+        val prefs = context.getSharedPreferences("qadha_tracker_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("end_of_day_review_time", "22:30") ?: "22:30"
+    }
+
+    fun setEndOfDayReviewTime(context: Context, timeStr: String) {
+        val prefs = context.getSharedPreferences("qadha_tracker_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("end_of_day_review_time", timeStr).apply()
+        scheduleEndOfDayReview(context)
+    }
+
+    fun scheduleEndOfDayReview(context: Context) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val prefs = context.getSharedPreferences("qadha_tracker_prefs", Context.MODE_PRIVATE)
+        val timezoneId = prefs.getString("user_timezone", TimeZone.getDefault().id) ?: TimeZone.getDefault().id
+        val tz = TimeZone.getTimeZone(timezoneId)
+
+        val customTime = getEndOfDayReviewTime(context)
+        val timeParts = customTime.split(":")
+        val hour = timeParts.getOrNull(0)?.toIntOrNull() ?: 22
+        val minute = timeParts.getOrNull(1)?.toIntOrNull() ?: 30
+
+        val now = System.currentTimeMillis()
+        val cal = Calendar.getInstance(tz).apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+
+        if (cal.timeInMillis <= now) {
+            cal.add(Calendar.DAY_OF_YEAR, 1)
+        }
+
+        val intent = Intent(context, PrayerAlarmReceiver::class.java).apply {
+            action = ACTION_END_OF_DAY_REVIEW
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            END_OF_DAY_ALARM_REQUEST,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (alarmManager.canScheduleExactAlarms()) {
+                        alarmManager.setExactAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            cal.timeInMillis,
+                            pendingIntent
+                        )
+                    } else {
+                        alarmManager.setAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            cal.timeInMillis,
+                            pendingIntent
+                        )
+                    }
+                } else {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        cal.timeInMillis,
+                        pendingIntent
+                    )
+                }
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    cal.timeInMillis,
+                    pendingIntent
+                )
+            }
+            Log.d("PrayerAlarmScheduler", "Scheduled End of Day review alarm at ${cal.time}")
+        } catch (e: SecurityException) {
+            Log.e("PrayerAlarmScheduler", "SecurityException scheduling End of Day review: ${e.message}")
+            alarmManager.set(
+                AlarmManager.RTC_WAKEUP,
+                cal.timeInMillis,
+                pendingIntent
+            )
+        }
+    }
 
     /**
      * Converts "13:30" into "1:30 PM", "05:00" into "5:00 AM", etc.
@@ -270,5 +359,6 @@ object PrayerAlarmScheduler {
                 )
             }
         }
+        scheduleEndOfDayReview(context)
     }
 }

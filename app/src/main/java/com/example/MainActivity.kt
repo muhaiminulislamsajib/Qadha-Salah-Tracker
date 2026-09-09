@@ -194,9 +194,11 @@ data class TrackerState(
     val history: List<QadhaHistoryEntry> = emptyList(),
     val isGoogleUser: Boolean = false,
     val googleEmail: String? = null,
+    val currentUserId: String? = null,
     val isSyncing: Boolean = false,
-    val authChoiceMade: Boolean = true,
-    val cloudRestoredPayload: TrackerState? = null
+    val authChoiceMade: Boolean = false,
+    val cloudRestoredPayload: TrackerState? = null,
+    val showEndOfDayReview: Boolean = false
 ) {
     // Current prayer to confirm in the sequential dialog (displays only one dialog at a time)
     val currentSequentialPrayer: PrayerType?
@@ -233,15 +235,24 @@ data class PendingOverlaySlot(
     }
 }
 
-class QadhaStorageHelper(context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("qadha_tracker_prefs", Context.MODE_PRIVATE)
+class QadhaStorageHelper(private val context: Context, private val customUserId: String? = null) {
+    private val globalPrefs: SharedPreferences = context.getSharedPreferences("qadha_tracker_prefs", Context.MODE_PRIVATE)
+
+    val activeUserId: String
+        get() = customUserId ?: QadhaAuthManager.getCurrentUser(context)?.uid ?: "unauthenticated"
+
+    private val userPrefs: SharedPreferences
+        get() {
+            val safeUid = activeUserId.replace(Regex("[^a-zA-Z0-9_]"), "_")
+            return context.getSharedPreferences("qadha_user_$safeUid", Context.MODE_PRIVATE)
+        }
 
     fun getTimeZoneId(): String {
-        return prefs.getString("user_timezone", java.util.TimeZone.getDefault().id) ?: java.util.TimeZone.getDefault().id
+        return globalPrefs.getString("user_timezone", java.util.TimeZone.getDefault().id) ?: java.util.TimeZone.getDefault().id
     }
 
     fun setTimeZoneId(tzId: String) {
-        prefs.edit().putString("user_timezone", tzId).apply()
+        globalPrefs.edit().putString("user_timezone", tzId).apply()
     }
 
     fun getPrayerCustomTime(prayer: PrayerType): String {
@@ -252,11 +263,11 @@ class QadhaStorageHelper(context: Context) {
             PrayerType.MAGHRIB -> "18:45"
             PrayerType.ISHA -> "20:30"
         }
-        return prefs.getString("custom_time_${prayer.id}", defaultTime) ?: defaultTime
+        return globalPrefs.getString("custom_time_${prayer.id}", defaultTime) ?: defaultTime
     }
 
     fun setPrayerCustomTime(prayer: PrayerType, timeStr: String) {
-        prefs.edit().putString("custom_time_${prayer.id}", timeStr).apply()
+        globalPrefs.edit().putString("custom_time_${prayer.id}", timeStr).apply()
     }
 
     companion object {
@@ -362,14 +373,14 @@ class QadhaStorageHelper(context: Context) {
 
 
     fun loadHistory(): List<QadhaHistoryEntry> {
-        val set = prefs.getStringSet("qadha_history_list", null) ?: return emptyList()
+        val set = userPrefs.getStringSet("qadha_history_list", null) ?: return emptyList()
         return set.mapNotNull { QadhaHistoryEntry.fromSerialized(it) }
             .sortedByDescending { it.timestamp }
     }
 
     fun saveHistory(list: List<QadhaHistoryEntry>) {
         val set = list.map { it.toSerialized() }.toSet()
-        prefs.edit().putStringSet("qadha_history_list", HashSet(set)).apply()
+        userPrefs.edit().putStringSet("qadha_history_list", HashSet(set)).apply()
     }
 
     fun addHistoryEntry(prayer: PrayerType, actionType: String, customDate: String? = null, customDay: String? = null, timestampOffsetMs: Long = 0) {
@@ -393,19 +404,20 @@ class QadhaStorageHelper(context: Context) {
     }
 
     fun hasInitializedData(): Boolean {
-        return prefs.contains("active_streak")
+        return userPrefs.contains("active_streak")
     }
 
     fun loadState(): TrackerState {
-        val streak = prefs.getInt("active_streak", 0)
-        val totalLogged = prefs.getInt("total_logged", 0)
+        val currentUser = QadhaAuthManager.getCurrentUser(context)
+        val streak = userPrefs.getInt("active_streak", 0)
+        val totalLogged = userPrefs.getInt("total_logged", 0)
         
         val backlog = PrayerType.values().associateWith { type ->
-            prefs.getInt("backlog_${type.id}", 0)
+            userPrefs.getInt("backlog_${type.id}", 0)
         }
         
         val todayStatus = PrayerType.values().associateWith { type ->
-            val statusStr = prefs.getString("today_status_${type.id}", TodayStatus.UNTRACKED.name)
+            val statusStr = userPrefs.getString("today_status_${type.id}", TodayStatus.UNTRACKED.name)
             try {
                 TodayStatus.valueOf(statusStr!!)
             } catch (e: Exception) {
@@ -414,9 +426,9 @@ class QadhaStorageHelper(context: Context) {
         }
         
         val history = loadHistory()
-        val isGoogleUser = prefs.getBoolean("is_google_user", false)
-        val googleEmail = prefs.getString("google_user_email", null)
-        val authChoiceMade = prefs.getBoolean("auth_choice_made", true)
+        val isAuth = currentUser != null
+        val isGoogle = currentUser?.isGoogle ?: false
+        val email = currentUser?.email
         
         return TrackerState(
             activeStreak = streak,
@@ -426,14 +438,15 @@ class QadhaStorageHelper(context: Context) {
             missedPrayers = emptyList(),
             currentPrayerIndex = 0,
             history = history,
-            isGoogleUser = isGoogleUser,
-            googleEmail = googleEmail,
-            authChoiceMade = authChoiceMade
+            isGoogleUser = isGoogle,
+            googleEmail = email,
+            currentUserId = currentUser?.uid,
+            authChoiceMade = isAuth
         )
     }
 
     fun saveState(state: TrackerState) {
-        val editor = prefs.edit()
+        val editor = userPrefs.edit()
         editor.putInt("active_streak", state.activeStreak)
         editor.putInt("total_logged", state.totalLoggedCount)
         
@@ -450,7 +463,7 @@ class QadhaStorageHelper(context: Context) {
     }
     
     fun clearTodayStatusOnly() {
-        val editor = prefs.edit()
+        val editor = userPrefs.edit()
         PrayerType.values().forEach { type ->
             editor.putString("today_status_${type.id}", TodayStatus.UNTRACKED.name)
         }
@@ -462,9 +475,13 @@ class QadhaStorageHelper(context: Context) {
 // 3. STATE REPRESENTATION (VIEWMODEL)
 // ==========================================
 
-class QadhaTrackerViewModel(context: Context) : ViewModel() {
+class QadhaTrackerViewModel(
+    context: Context,
+    private val customStorage: QadhaStorageHelper? = null
+) : ViewModel() {
     private val appContext = context.applicationContext
-    private val storage = QadhaStorageHelper(context)
+    private val storage: QadhaStorageHelper
+        get() = customStorage ?: QadhaStorageHelper(appContext, _uiState.value.currentUserId)
     val cloudHelper = QadhaCloudBackupHelper(context)
     
     // Initial state with sequential prayer confirmation flow ready
@@ -473,10 +490,17 @@ class QadhaTrackerViewModel(context: Context) : ViewModel() {
             activeStreak = 0,
             missedPrayers = emptyList(),
             currentPrayerIndex = 0,
-            authChoiceMade = true
+            authChoiceMade = false
         )
     )
     val uiState: StateFlow<TrackerState> = _uiState.asStateFlow()
+
+    private val _authErrorMessage = MutableStateFlow<String?>(null)
+    val authErrorMessage: StateFlow<String?> = _authErrorMessage.asStateFlow()
+
+    fun clearAuthError() {
+        _authErrorMessage.value = null
+    }
 
     // Helper: Returns list of prayers that have strictly started today, are untracked, and have no pending future reminder
     private fun getEligiblePromptPrayers(currentTodayStatus: Map<PrayerType, TodayStatus>): List<PrayerType> {
@@ -491,49 +515,70 @@ class QadhaTrackerViewModel(context: Context) : ViewModel() {
     }
 
     init {
-        // Move initial database/storage loading off the main thread using Dispatchers.IO
-        viewModelScope.launch(Dispatchers.IO) {
-            val loadedState = storage.loadState()
-            val isFirstBoot = !storage.hasInitializedData()
-            
-            if (isFirstBoot) {
-                val initialBacklog = PrayerType.values().associateWith { 0 }
-                val initialToday = PrayerType.values().associateWith { TodayStatus.UNTRACKED }
-                val eligiblePrayers = getEligiblePromptPrayers(initialToday)
+        if (customStorage != null) {
+            _uiState.value = customStorage.loadState()
+        } else {
+            // Move initial database/storage loading off the main thread using Dispatchers.IO
+            viewModelScope.launch(Dispatchers.IO) {
+                val currentUser = QadhaAuthManager.getCurrentUser(appContext)
+                if (currentUser != null) {
+                    val userStorage = QadhaStorageHelper(appContext, currentUser.uid)
+                    val loadedState = userStorage.loadState()
+                    val isFirstBoot = !userStorage.hasInitializedData()
+                    
+                    val state = if (isFirstBoot) {
+                        val initialBacklog = PrayerType.values().associateWith { 0 }
+                        val initialToday = PrayerType.values().associateWith { TodayStatus.UNTRACKED }
+                        val eligiblePrayers = getEligiblePromptPrayers(initialToday)
 
-                val stateWithQueue = TrackerState(
-                    activeStreak = 0,
-                    backlog = initialBacklog,
-                    todayStatus = initialToday,
-                    missedPrayers = eligiblePrayers,
-                    currentPrayerIndex = 0,
-                    totalLoggedCount = 0,
-                    history = emptyList(),
-                    authChoiceMade = true
-                )
-                storage.saveState(stateWithQueue)
-                _uiState.value = stateWithQueue
-            } else {
-                var state = loadedState.copy(authChoiceMade = true)
-                // Initialize missed prayer list respecting strict Salah start time and pending reminders
-                val eligiblePrayers = getEligiblePromptPrayers(state.todayStatus)
-                state = state.copy(
-                    missedPrayers = eligiblePrayers,
-                    currentPrayerIndex = 0
-                )
-                _uiState.value = state
-            }
-            
-            if (cloudHelper.isGoogleSignedIn()) {
-                val email = cloudHelper.getGoogleUserEmail()
-                _uiState.update { currentState ->
-                    currentState.copy(
-                        isGoogleUser = true,
-                        googleEmail = email,
-                        authChoiceMade = true
+                        val stateWithQueue = TrackerState(
+                            activeStreak = 0,
+                            backlog = initialBacklog,
+                            todayStatus = initialToday,
+                            missedPrayers = eligiblePrayers,
+                            currentPrayerIndex = 0,
+                            totalLoggedCount = 0,
+                            history = emptyList(),
+                            isGoogleUser = currentUser.isGoogle,
+                            googleEmail = currentUser.email,
+                            currentUserId = currentUser.uid,
+                            authChoiceMade = true
+                        )
+                        userStorage.saveState(stateWithQueue)
+                        stateWithQueue
+                    } else {
+                        val eligiblePrayers = getEligiblePromptPrayers(loadedState.todayStatus)
+                        loadedState.copy(
+                            isGoogleUser = currentUser.isGoogle,
+                            googleEmail = currentUser.email,
+                            currentUserId = currentUser.uid,
+                            authChoiceMade = true,
+                            missedPrayers = eligiblePrayers,
+                            currentPrayerIndex = 0
+                        )
+                    }
+                    _uiState.value = state
+
+                    if (currentUser.isGoogle) {
+                        cloudHelper.setGoogleUser(currentUser.uid, currentUser.email ?: "", true)
+                        triggerCloudBackup()
+                    }
+                } else {
+                    // When no user is authenticated, show the proper Login/Sign Up screen!
+                    _uiState.value = TrackerState(
+                        activeStreak = 0,
+                        backlog = PrayerType.values().associateWith { 0 },
+                        todayStatus = PrayerType.values().associateWith { TodayStatus.UNTRACKED },
+                        missedPrayers = emptyList(),
+                        currentPrayerIndex = 0,
+                        totalLoggedCount = 0,
+                        history = emptyList(),
+                        isGoogleUser = false,
+                        googleEmail = null,
+                        currentUserId = null,
+                        authChoiceMade = false
                     )
                 }
-                triggerCloudBackup()
             }
         }
     }
@@ -848,17 +893,15 @@ class QadhaTrackerViewModel(context: Context) : ViewModel() {
     }
 
     fun reloadState() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val loadedState = storage.loadState()
-            _uiState.update { currentState ->
-                currentState.copy(
-                    activeStreak = loadedState.activeStreak,
-                    backlog = loadedState.backlog,
-                    todayStatus = loadedState.todayStatus,
-                    totalLoggedCount = loadedState.totalLoggedCount,
-                    history = loadedState.history
-                )
-            }
+        val loadedState = storage.loadState()
+        _uiState.update { currentState ->
+            currentState.copy(
+                activeStreak = loadedState.activeStreak,
+                backlog = loadedState.backlog,
+                todayStatus = loadedState.todayStatus,
+                totalLoggedCount = loadedState.totalLoggedCount,
+                history = loadedState.history
+            )
         }
     }
 
@@ -903,56 +946,216 @@ class QadhaTrackerViewModel(context: Context) : ViewModel() {
         }
     }
 
-    fun signInWithGoogleSelected(email: String, userId: String) {
-        cloudHelper.setGoogleUser(userId, email, true)
-        _uiState.update { currentState ->
-            currentState.copy(
-                isGoogleUser = true,
-                googleEmail = email,
-                authChoiceMade = true,
-                isSyncing = true
-            )
+    fun signUpWithEmail(email: String, pass: String) {
+        val result = QadhaAuthManager.signUpWithEmail(appContext, email, pass)
+        if (result.isSuccess) {
+            _authErrorMessage.value = null
+            loadAuthenticatedUser(result.getOrNull()!!)
+        } else {
+            _authErrorMessage.value = result.exceptionOrNull()?.message ?: "Sign up failed"
         }
-        
+    }
+
+    fun signInWithEmail(email: String, pass: String) {
+        val result = QadhaAuthManager.signInWithEmail(appContext, email, pass)
+        if (result.isSuccess) {
+            _authErrorMessage.value = null
+            loadAuthenticatedUser(result.getOrNull()!!)
+        } else {
+            _authErrorMessage.value = result.exceptionOrNull()?.message ?: "Sign in failed"
+        }
+    }
+
+    fun signInWithGoogle(email: String) {
+        val user = QadhaAuthManager.signInWithGoogle(appContext, email)
+        _authErrorMessage.value = null
+        loadAuthenticatedUser(user)
+    }
+
+    fun continueAsGuest() {
+        val guest = QadhaAuthManager.continueAsGuest(appContext)
+        _authErrorMessage.value = null
+        loadAuthenticatedUser(guest)
+    }
+
+    private fun loadAuthenticatedUser(user: QadhaUser) {
         viewModelScope.launch(Dispatchers.IO) {
-            cloudHelper.restoreFromCloud(userId) { restoredState ->
-                if (restoredState != null && restoredState.totalLoggedCount > 0) {
-                    _uiState.update { currentState ->
-                        currentState.copy(
-                            isSyncing = false,
-                            cloudRestoredPayload = restoredState
-                        )
-                    }
-                } else {
-                    val currentState = _uiState.value
-                    cloudHelper.backupToCloud(currentState) {
-                        _uiState.update { it.copy(isSyncing = false) }
+            val userStorage = QadhaStorageHelper(appContext, user.uid)
+            val loadedState = userStorage.loadState()
+            val eligiblePrayers = getEligiblePromptPrayers(loadedState.todayStatus)
+            val state = loadedState.copy(
+                isGoogleUser = user.isGoogle,
+                googleEmail = user.email,
+                currentUserId = user.uid,
+                authChoiceMade = true,
+                missedPrayers = eligiblePrayers,
+                currentPrayerIndex = 0
+            )
+            _uiState.value = state
+
+            if (user.isGoogle) {
+                cloudHelper.setGoogleUser(user.uid, user.email ?: "", true)
+                cloudHelper.restoreFromCloud(user.uid) { restoredState ->
+                    if (restoredState != null && restoredState.totalLoggedCount > 0) {
+                        _uiState.update { it.copy(cloudRestoredPayload = restoredState) }
+                    } else {
+                        cloudHelper.backupToCloud(state)
                     }
                 }
             }
         }
     }
 
-    fun continueAsGuestSelected() {
-        cloudHelper.setChoiceMade()
-        _uiState.update { currentState ->
-            currentState.copy(
-                isGoogleUser = false,
-                googleEmail = null,
-                authChoiceMade = true
-            )
-        }
+    fun signOut() {
+        QadhaAuthManager.signOut(appContext)
+        cloudHelper.logout()
+        _uiState.value = TrackerState(
+            activeStreak = 0,
+            backlog = PrayerType.values().associateWith { 0 },
+            todayStatus = PrayerType.values().associateWith { TodayStatus.UNTRACKED },
+            missedPrayers = emptyList(),
+            currentPrayerIndex = 0,
+            totalLoggedCount = 0,
+            history = emptyList(),
+            isGoogleUser = false,
+            googleEmail = null,
+            currentUserId = null,
+            authChoiceMade = false,
+            cloudRestoredPayload = null,
+            showEndOfDayReview = false
+        )
     }
 
-    fun signOutGoogle() {
-        cloudHelper.logout()
-        _uiState.update { currentState ->
-            currentState.copy(
-                isGoogleUser = false,
-                googleEmail = null,
-                authChoiceMade = false,
-                cloudRestoredPayload = null
-            )
+    fun setEndOfDayReviewVisible(visible: Boolean) {
+        _uiState.update { it.copy(showEndOfDayReview = visible) }
+    }
+
+    fun reconcileEndOfDayPrayer(prayer: PrayerType, choice: EndOfDayChoice, dateMillis: Long = System.currentTimeMillis()) {
+        if (choice == EndOfDayChoice.SKIP) return
+
+        val cal = Calendar.getInstance().apply { timeInMillis = dateMillis }
+        val dateStr = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(cal.time)
+        val dayStr = SimpleDateFormat("EEEE", Locale.getDefault()).format(cal.time)
+
+        val currentState = _uiState.value
+        val updatedToday = currentState.todayStatus.toMutableMap()
+        val updatedBacklog = currentState.backlog.toMutableMap()
+        val updatedHistory = currentState.history.toMutableList()
+        var currentStreak = currentState.activeStreak
+        var totalLogged = currentState.totalLoggedCount
+
+        val priorStatus = updatedToday[prayer] ?: TodayStatus.UNTRACKED
+
+        when (choice) {
+            EndOfDayChoice.MISSED -> {
+                if (priorStatus == TodayStatus.MISSED) {
+                    // Already counted as missed earlier today -> do not double-count!
+                } else if (priorStatus == TodayStatus.COMPLETED) {
+                    // Corrected from Prayed to Missed
+                    val currentVal = updatedBacklog[prayer] ?: 0
+                    updatedBacklog[prayer] = currentVal + 1
+                    updatedToday[prayer] = TodayStatus.MISSED
+                    currentStreak = 0
+
+                    val entry = QadhaHistoryEntry(
+                        id = "${prayer.id}_${dateMillis}_${(0..1000).random()}",
+                        prayerId = prayer.id,
+                        dateString = dateStr,
+                        dayOfWeek = dayStr,
+                        actionType = "MISSED",
+                        timestamp = dateMillis,
+                        note = "End-of-Day Review: Missed"
+                    )
+                    updatedHistory.add(0, entry)
+                } else {
+                    // Was UNTRACKED: add exactly 1 missed entry
+                    val currentVal = updatedBacklog[prayer] ?: 0
+                    updatedBacklog[prayer] = currentVal + 1
+                    updatedToday[prayer] = TodayStatus.MISSED
+                    currentStreak = 0
+
+                    val entry = QadhaHistoryEntry(
+                        id = "${prayer.id}_${dateMillis}_${(0..1000).random()}",
+                        prayerId = prayer.id,
+                        dateString = dateStr,
+                        dayOfWeek = dayStr,
+                        actionType = "MISSED",
+                        timestamp = dateMillis,
+                        note = "End-of-Day Review: Missed"
+                    )
+                    updatedHistory.add(0, entry)
+                }
+            }
+            EndOfDayChoice.PRAYED -> {
+                if (priorStatus == TodayStatus.COMPLETED) {
+                    // Already marked prayed earlier today -> no duplicate addition!
+                } else if (priorStatus == TodayStatus.MISSED) {
+                    // Was marked Missed earlier, now confirmed Prayed:
+                    val currentVal = updatedBacklog[prayer] ?: 0
+                    updatedBacklog[prayer] = (currentVal - 1).coerceAtLeast(0)
+                    updatedToday[prayer] = TodayStatus.COMPLETED
+
+                    val unresolvedIdx = updatedHistory.indexOfFirst {
+                        it.prayerId.equals(prayer.id, ignoreCase = true) &&
+                        isEntryMatchingDate(it, dateStr, dateMillis) &&
+                        it.actionType == "MISSED" &&
+                        it.laterStatus == null
+                    }
+                    if (unresolvedIdx != -1) {
+                        val old = updatedHistory[unresolvedIdx]
+                        updatedHistory[unresolvedIdx] = old.copy(
+                            laterStatus = "PRAYED_LATER",
+                            laterTimestamp = dateMillis
+                        )
+                    } else {
+                        val entry = QadhaHistoryEntry(
+                            id = "${prayer.id}_${dateMillis}_${(0..1000).random()}",
+                            prayerId = prayer.id,
+                            dateString = dateStr,
+                            dayOfWeek = dayStr,
+                            actionType = "PRAYED",
+                            timestamp = dateMillis,
+                            laterStatus = "PRAYED_LATER",
+                            laterTimestamp = dateMillis,
+                            note = "End-of-Day Review: Prayed Later"
+                        )
+                        updatedHistory.add(0, entry)
+                    }
+                } else {
+                    // Was UNTRACKED
+                    updatedToday[prayer] = TodayStatus.COMPLETED
+                    currentStreak++
+                    totalLogged++
+
+                    val entry = QadhaHistoryEntry(
+                        id = "${prayer.id}_${dateMillis}_${(0..1000).random()}",
+                        prayerId = prayer.id,
+                        dateString = dateStr,
+                        dayOfWeek = dayStr,
+                        actionType = "PRAYED",
+                        timestamp = dateMillis,
+                        note = "End-of-Day Review: Prayed"
+                    )
+                    updatedHistory.add(0, entry)
+                }
+            }
+            EndOfDayChoice.SKIP -> {}
+        }
+
+        val newState = currentState.copy(
+            activeStreak = currentStreak,
+            backlog = updatedBacklog,
+            todayStatus = updatedToday,
+            totalLoggedCount = totalLogged,
+            history = updatedHistory
+        )
+        _uiState.value = newState
+
+        viewModelScope.launch(Dispatchers.IO) {
+            storage.saveState(newState)
+            if (cloudHelper.isGoogleSignedIn()) {
+                cloudHelper.backupToCloud(newState)
+            }
         }
     }
 
@@ -992,6 +1195,8 @@ class QadhaTrackerViewModel(context: Context) : ViewModel() {
             }
         }
     }
+
+    fun signOutGoogle() = signOut()
 }
 
 // ==========================================
@@ -1004,17 +1209,22 @@ fun getDynamicHijriString(context: Context? = null): String {
 
 class MainActivity : ComponentActivity() {
     private var pendingPrayerPrompt by mutableStateOf<String?>(null)
+    private var pendingEndOfDayReview by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         
         pendingPrayerPrompt = intent?.getStringExtra("extra_prompt_prayer")
+        pendingEndOfDayReview = intent?.getBooleanExtra(PrayerAlarmScheduler.EXTRA_OPEN_END_OF_DAY_REVIEW, false) ?: false
         PrayerAlarmScheduler.scheduleAllAlarms(this)
 
         setContent {
             MyApplicationTheme {
-                MainAppScreen(pendingPrayerPrompt = pendingPrayerPrompt)
+                MainAppScreen(
+                    pendingPrayerPrompt = pendingPrayerPrompt,
+                    pendingEndOfDayReview = pendingEndOfDayReview
+                )
             }
         }
     }
@@ -1026,12 +1236,18 @@ class MainActivity : ComponentActivity() {
         if (prayerId != null) {
             pendingPrayerPrompt = prayerId
         }
+        if (intent.getBooleanExtra(PrayerAlarmScheduler.EXTRA_OPEN_END_OF_DAY_REVIEW, false)) {
+            pendingEndOfDayReview = true
+        }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainAppScreen(pendingPrayerPrompt: String? = null) {
+fun MainAppScreen(
+    pendingPrayerPrompt: String? = null,
+    pendingEndOfDayReview: Boolean = false
+) {
     val context = LocalContext.current
     // Scaffold architecture with state representation
     val viewModel: QadhaTrackerViewModel = viewModel(
@@ -1067,7 +1283,15 @@ fun MainAppScreen(pendingPrayerPrompt: String? = null) {
         }
     }
 
+    // Handle deep-link / notification intent for end of day review
+    LaunchedEffect(pendingEndOfDayReview) {
+        if (pendingEndOfDayReview) {
+            viewModel.setEndOfDayReviewVisible(true)
+        }
+    }
+
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val authError by viewModel.authErrorMessage.collectAsStateWithLifecycle()
     var selectedTab by remember { mutableIntStateOf(0) }
 
     // Synchronize UI instantly context when background overlays update the ledger
@@ -1090,13 +1314,13 @@ fun MainAppScreen(pendingPrayerPrompt: String? = null) {
     }
 
     if (!uiState.authChoiceMade) {
-        QadhaAuthChoiceScreen(
-            onGoogleSignIn = { email, userId -> 
-                viewModel.signInWithGoogleSelected(email, userId) 
-            },
-            onContinueAsGuest = { 
-                viewModel.continueAsGuestSelected() 
-            }
+        QadhaAuthScreen(
+            onEmailSignIn = { email, pass -> viewModel.signInWithEmail(email, pass) },
+            onEmailSignUp = { email, pass -> viewModel.signUpWithEmail(email, pass) },
+            onGoogleSignIn = { email -> viewModel.signInWithGoogle(email) },
+            onContinueAsGuest = { viewModel.continueAsGuest() },
+            errorMessage = authError,
+            onClearError = { viewModel.clearAuthError() }
         )
     } else {
         Scaffold(
@@ -1233,7 +1457,12 @@ fun MainAppScreen(pendingPrayerPrompt: String? = null) {
             ) {
                 // Standard tab router page layouts
                 when (selectedTab) {
-                    0 -> DashboardScreen(uiState = uiState, onCompletedToggle = { viewModel.toggleTodayStatus(it) }, onTriggerQueue = { viewModel.triggerSimulatedQueue() })
+                    0 -> DashboardScreen(
+                        uiState = uiState, 
+                        onCompletedToggle = { viewModel.toggleTodayStatus(it) }, 
+                        onTriggerQueue = { viewModel.triggerSimulatedQueue() },
+                        onOpenEndOfDayReview = { viewModel.setEndOfDayReviewVisible(true) }
+                    )
                     1 -> QadhaBookScreen(
                         uiState = uiState, 
                         onModifyCount = { type, inc -> viewModel.modifyBacklogCount(type, inc) },
@@ -1241,6 +1470,17 @@ fun MainAppScreen(pendingPrayerPrompt: String? = null) {
                         onLogQadhaForDate = { prayer, action, dateMs -> viewModel.logQadhaForSpecificDate(prayer, action, dateMs) }
                     )
                     2 -> AchievementsScreen(uiState = uiState)
+                }
+
+                // End-of-Day Salah Review Dialog
+                if (uiState.showEndOfDayReview) {
+                    EndOfDaySalahReviewDialog(
+                        uiState = uiState,
+                        onDismiss = { viewModel.setEndOfDayReviewVisible(false) },
+                        onReconcile = { prayer, choice ->
+                            viewModel.reconcileEndOfDayPrayer(prayer, choice)
+                        }
+                    )
                 }
 
                 // CRUCIAL FEATURE: The Sequential Pop-up Queue Dialog
@@ -1762,7 +2002,8 @@ fun ProfileSyncControlDialog(
 fun DashboardScreen(
     uiState: TrackerState,
     onCompletedToggle: (PrayerType) -> Unit,
-    onTriggerQueue: () -> Unit
+    onTriggerQueue: () -> Unit,
+    onOpenEndOfDayReview: () -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier
@@ -1959,6 +2200,13 @@ fun DashboardScreen(
                 prayer = prayer,
                 status = status,
                 onClick = { onCompletedToggle(prayer) }
+            )
+        }
+
+        // End of Day Salah Review Trigger Card
+        item {
+            EndOfDayReviewCard(
+                onOpenReview = onOpenEndOfDayReview
             )
         }
 

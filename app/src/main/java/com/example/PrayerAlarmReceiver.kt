@@ -28,6 +28,12 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
         // 1. Wake screen if off or locked so alert is immediately visible
         wakeScreen(context)
 
+        if (action == PrayerAlarmScheduler.ACTION_END_OF_DAY_REVIEW) {
+            showEndOfDayReviewNotification(context)
+            PrayerAlarmScheduler.scheduleEndOfDayReview(context)
+            return
+        }
+
         if (action == PrayerAlarmScheduler.ACTION_PRAYER_REMINDER) {
             // Clear pending reminder state from preferences
             PrayerAlarmScheduler.clearPendingReminder(context, prayer)
@@ -187,6 +193,54 @@ class PrayerAlarmReceiver : BroadcastReceiver() {
 
         try {
             notificationManager.notify(prayer.ordinal + 100, notification)
+        } catch (e: SecurityException) {
+            Log.e("PrayerAlarmReceiver", "Notification permission not granted: ${e.message}")
+        }
+    }
+
+    private fun showEndOfDayReviewNotification(context: Context) {
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            ?: return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Reminders and alerts for daily Salah and Qadha tracking"
+                enableVibration(true)
+                enableLights(true)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val openIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(PrayerAlarmScheduler.EXTRA_OPEN_END_OF_DAY_REVIEW, true)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            9999,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_salah_notification)
+            .setContentTitle("End of Day Salah Review")
+            .setContentText("Have you performed all your Salah today?")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("Have you performed all your Salah today? Tap to review and reconcile your 5 daily prayers."))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        try {
+            notificationManager.notify(8888, notification)
         } catch (e: SecurityException) {
             Log.e("PrayerAlarmReceiver", "Notification permission not granted: ${e.message}")
         }

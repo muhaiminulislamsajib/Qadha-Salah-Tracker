@@ -19,50 +19,43 @@ class QadhaCloudBackupHelper(private val context: Context) {
         get() = "https://qadha-tracker-default-rtdb.firebaseio.com"
 
     fun isGoogleSignedIn(): Boolean {
-        return prefs.getBoolean("is_google_user", false)
+        val user = QadhaAuthManager.getCurrentUser(context)
+        return user != null && user.isGoogle
     }
 
     fun getGoogleUserEmail(): String? {
-        return prefs.getString("google_user_email", null)
+        return QadhaAuthManager.getCurrentUser(context)?.email
     }
 
     fun getGoogleUserId(): String? {
-        return prefs.getString("google_user_id", null)
+        return QadhaAuthManager.getCurrentUser(context)?.uid
     }
 
     fun isChoiceMade(): Boolean {
-        return prefs.getBoolean("auth_choice_made", false)
+        return QadhaAuthManager.isAuthenticated(context)
     }
 
     fun setChoiceMade() {
-        prefs.edit().putBoolean("auth_choice_made", true).apply()
+        if (!QadhaAuthManager.isAuthenticated(context)) {
+            QadhaAuthManager.continueAsGuest(context)
+        }
     }
 
     fun setGoogleUser(userId: String?, email: String?, isGoogle: Boolean) {
-        prefs.edit().apply {
-            putBoolean("is_google_user", isGoogle)
-            putString("google_user_email", email)
-            putString("google_user_id", userId)
-            putBoolean("auth_choice_made", true)
-            apply()
+        if (!email.isNullOrBlank()) {
+            QadhaAuthManager.signInWithGoogle(context, email, userId)
         }
     }
 
     fun logout() {
-        prefs.edit().apply {
-            putBoolean("is_google_user", false)
-            putString("google_user_email", null)
-            putString("google_user_id", null)
-            putBoolean("auth_choice_made", false)
-            apply()
-        }
+        QadhaAuthManager.signOut(context)
     }
 
     /**
      * Uploads the full local state to Firebase Realtime Database.
      */
     fun backupToCloud(state: TrackerState, onComplete: (Boolean) -> Unit = {}) {
-        val userId = getGoogleUserId()
+        val userId = getGoogleUserId() ?: QadhaAuthManager.getCurrentUser(context)?.uid
         if (userId.isNullOrEmpty()) {
             onComplete(false)
             return
